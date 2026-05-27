@@ -2,18 +2,15 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 import pandas as pd
 import networkx as nx
-from pyvis.network import Network
 import json
 import os
 
 app = FastAPI(
-    title="Corporate Brain - Interactive Graph Engine",
-    description="HANA/ExcelデータからPyvisのインタラクティブHTMLを動的に生成して配信するサービス"
+    title="Corporate Brain - High Reliability Graph Engine",
+    description="Render環境用に最適化された、自律型ナレッジネットワーク図配信サービス"
 )
 
-# ==========================================
 # カラーデザインシステム (Modern Dark Theme)
-# ==========================================
 COLORS = {
     "background": "#0F172A",
     "person": "#38BDF8",
@@ -26,11 +23,9 @@ COLORS = {
 
 @app.get("/api/v1/forensics/global-graph", response_class=HTMLResponse)
 async def generate_and_serve_graph():
-    """
-    Build AppsのWebビューからアクセスされ、ぐりぐり動くHTMLを画面いっぱいに返すエンドポイント
-    """
-    # ワークスペース内のエクセルマスタのパスを指定
-    EXCEL_PATH = "corporate_brain_master_40.xlsx"
+    # 絶対パスを動的に組み立て
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    EXCEL_PATH = os.path.join(BASE_DIR, "corporate_brain_master_40.xlsx")
     
     if not os.path.exists(EXCEL_PATH):
         raise HTTPException(status_code=404, detail="データソース(Excel)が見つかりません。")
@@ -66,12 +61,17 @@ async def generate_and_serve_graph():
                 G.add_node(p, type="project_loc")
                 G.add_edge(person, p)
 
-        # 3. ノード/エッジの装飾スコアリング
         degree_dict = dict(G.degree)
+
+        # 3. ⭐ Vis.js が直接解読できるJSONデータ構造へ手動マッピング
+        vis_nodes = []
+        vis_edges = []
+
         for n in G.nodes():
             attr = G.nodes[n]
             n_type = attr.get("type")
 
+            # 色の決定
             if n_type == "person" and attr.get("is_retiring"):
                 color = COLORS["person_risk"]
             elif n_type == "person":
@@ -81,62 +81,89 @@ async def generate_and_serve_graph():
             else:
                 color = COLORS["project_loc"]
 
-            G.nodes[n]['label'] = n
-            G.nodes[n]['title'] = f"【{n_type.upper()}】\n{n}\n繋がり数: {degree_dict[n]}"
-            G.nodes[n]['color'] = color
-            G.nodes[n]['value'] = degree_dict[n] * 2
-            G.nodes[n]['font'] = {'color': COLORS['text'], 'size': 14, 'face': 'sans-serif'}
+            # ノード配列の組み立て
+            vis_nodes.append({
+                "id": n,
+                "label": n,
+                "color": color,
+                "value": degree_dict[n] * 2, # 繋がりが多いほど大きく
+                "title": f"【{str(n_type).upper()}】<br>{n}<br>繋がり数: {degree_dict[n]}", # ホバー
+                "font": {"color": COLORS["text"], "size": 14, "face": "sans-serif"}
+            })
 
         for u, v in G.edges():
-            G.edges[u, v]['color'] = COLORS['edge']
-            G.edges[u, v]['width'] = 1.5
+            # エッジ配列の組み立て
+            vis_edges.append({
+                "from": u,
+                "to": v,
+                "color": COLORS["edge"],
+                "width": 1.5
+            })
 
-        # 4. Pyvisの初期化（★本番Web配信サーバー用に調整）
-        net = Network(
-            height="100vh",      # ⭐Build Appsの画面サイズに追従させるため「100vh」に変更
-            width="100%",
-            bgcolor=COLORS["background"],
-            font_color=COLORS["text"],
-            filter_menu=True,
-            notebook=False,      # ⭐Colabではないため「False」に修正
-            cdn_resources='remote' # ⭐iPhoneのメモリ負荷を下げるため外部CDN読み込みに最適化
-        )
-
-        net.from_nx(G)
-
-        # 物理演算オプション設定
-        options = {
-            "nodes": {"borderWidth": 2, "borderWidthSelected": 4},
-            "edges": {"smooth": {"type": "continuous", "forceDirection": "none"}},
-            "physics": {
-                "forceAtlas2Based": {
-                    "gravitationalConstant": -120, "centralGravity": 0.01,
-                    "springLength": 150, "springConstant": 0.08
-                },
-                "maxVelocity": 50, "solver": "forceAtlas2Based", "timestep": 0.35,
-                "stabilization": {"iterations": 150}
-            },
-            "interaction": {
-                "hover": True, "hoverConnectedEdges": True, 
-                "selectConnectedEdges": True, "tooltipDelay": 100
-            }
-        }
-        net.set_options(json.dumps(options))
-
-        # コンテナ内のローカル一時フォルダにHTMLを一時保存
-        temp_html_path = "/tmp/corporate_brain_graph.html"
-        net.show(temp_html_path)
-
-        # 保存したHTMLを読み込んでResponseとして返却
-        with open(temp_html_path, "r", encoding="utf-8") as f:
-            html_content = f.read()
-
-        return HTMLResponse(content=html_content, status_code=200)
+        # 4. ⭐ 純粋な HTML / Vis.js テンプレートの動的生成
+        # 外部CDN経由で超軽量に読み込ませるため、iPhoneのメモリ負荷も一切ありません
+        html_template = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Corporate Brain Analytics</title>
+            <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+            <style type="text/css">
+                body, html {{
+                    margin: 0; padding: 0; width: 100%; height: 100%;
+                    background-color: {COLORS["background"]};
+                    overflow: hidden;
+                }}
+                #network {{
+                    width: 100%; height: 100vh;
+                }}
+            </style>
+        </head>
+        <body>
+            <div id="network"></div>
+            <script type="text/javascript">
+                var container = document.getElementById('network');
+                var data = {{
+                    nodes: new vis.DataSet({json.dumps(vis_nodes, ensure_ascii=False)}),
+                    edges: new vis.DataSet({json.dumps(vis_edges, ensure_ascii=False)})
+                }};
+                var options = {{
+                    nodes: {{
+                        shape: 'dot',
+                        borderWidth: 2,
+                        borderWidthSelected: 4,
+                        scaling: {{ min: 12, max: 35 }}
+                    }},
+                    edges: {{
+                        smooth: {{ type: 'continuous', forceDirection: 'none' }}
+                    }},
+                    physics: {{
+                        forceAtlas2Based: {{
+                            gravitationalConstant: -120,
+                            centralGravity: 0.01,
+                            springLength: 150,
+                            springConstant: 0.08
+                        }},
+                        maxVelocity: 50,
+                        solver: 'forceAtlas2Based',
+                        timestep: 0.35,
+                        stabilization: {{ iterations: 150 }}
+                    }},
+                    interaction: {{
+                        hover: true,
+                        hoverConnectedEdges: true,
+                        selectConnectedEdges: true,
+                        tooltipDelay: 100
+                    }}
+                }};
+                var network = new vis.Network(container, data, options);
+            </script>
+        </body>
+        </html>
+        """
+        return HTMLResponse(content=html_template, status_code=200)
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"内部レンダリングエラー: {str(e)}")
-
-# ローカルデバッグ起動用
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8080)
